@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from scipy.sparse import lil_matrix
 import time
 from scipy.optimize import least_squares
+import open3d as o3d
 
 # import pcl
 # import pcl.pcl_visualization
@@ -112,6 +113,11 @@ def bundle_adjustment_sparsity(n_cameras, n_points, camera_indices, point_indice
 
     return A
 
+def visualize(mat):
+    point_cloud = o3d.geometry.PointCloud()
+    point_cloud.points = o3d.utility.Vector3dVector(mat)
+    o3d.visualization.draw_geometries([point_cloud])
+
 if __name__ == '__main__':
     FILE_NAME = "problem-49-7776-pre.txt.bz2"
     camera_params, points_3d, camera_indices, point_indices, points_2d = read_bal_data(FILE_NAME)
@@ -127,6 +133,7 @@ if __name__ == '__main__':
     print("Total number of parameters: {}".format(n))
     print("Total number of residuals: {}".format(m))
 
+    visualize(points_3d)
     x0 = np.hstack((camera_params.ravel(), points_3d.ravel()))
     f0 = fun(x0, n_cameras, n_points, camera_indices, point_indices, points_2d)
     plt.plot(f0)

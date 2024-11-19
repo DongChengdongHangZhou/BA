@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from scipy.sparse import lil_matrix
 from scipy.optimize import least_squares
 import open3d as o3d
-from compute_angle3d_ransac import estimate_ori3d
+from compute_angle3d import estimate_ori3d
 
 def convert_oxoyoz_to_azi_ele(oxoyoz):
     '''
@@ -26,6 +26,40 @@ def convert_azi_ele_to_oxoyoz(azi_ele):
     return oxoyoz
 
 def load_params(camera_path,images_path,points3d_path,minutiae_root_path):
+    '''
+    cam_i:
+    +----------+----------+----------+----+----+----+---+----+----+
+    | \theta_x | \theta_y | \theta_z | tx | ty | tz | f | k1 | k2 |
+    +----------+----------+----------+----+----+----+---+----+----+
+
+    pt_i:
+    +---+---+---+------------+------------+
+    | x | y | z | angle(azi) | angle(ele) |
+    +---+---+---+------------+------------+
+
+    m: the number of observing cameras;
+    n: the number of reconstructed 3D points ( = num_point3d); 
+    k: the total number of 2D points in each camera ( = num_point2d);
+
+    x0:
+    +-----------------------------+--------------------------+
+    |        camera_params        |         points_3d        |
+    +-------+-------+-----+-------+------+------+-----+------+
+    | cam_1 | cam_2 | ... | cam_m | pt_1 | pt_2 | ... | pt_n |
+    +-------+-------+-----+-------+------+------+-----+------+
+
+    points_2d:            camera_indices:    acquire                          point3d_indices:   acquire
+    +-------+-------+     +---+              camera                           +---+              3D points
+    | p^1_x | p^1_y | === |   | ===          parameters                       |   |              for each
+    +-------+-------+     +---+              for                              +---+              2D point:
+    | p^2_x | p^2_y | === |   | ===          each                             |   |              points_3d[point3d_indices]
+    +-------+-------+     +---+              2D point:                        +---+
+    |  ...  |  ...  | === |   | ===          camera_params[camera_indices]    |   |
+    +-------+-------+     +---+                                               +---+
+    | p^k_x | p^k_y | === |   | ===                                           |   |
+    +-------+-------+     +---+                                               +---+
+    
+    '''
     file_points3d = open(points3d_path, 'r')
     num_point3d = 0
     points_3d = []
@@ -56,6 +90,7 @@ def load_params(camera_path,images_path,points3d_path,minutiae_root_path):
     ori_2d = []
     camera_indices = []
     point3d_indices = []
+    camera_idx = 0
     with open(images_path, 'r') as file:
         for line_num, line in enumerate(file, start=1):
             if ('#' in line)==False:
@@ -68,32 +103,34 @@ def load_params(camera_path,images_path,points3d_path,minutiae_root_path):
                     camera_params.append(param)
                     num_camera = num_camera + 1
                 else:
-                    num_point2d = int(len(data)/3)
+                    current_num_point2d = int(len(data)/3)
                     ori2d_temp = np.load(minutiae_root_path+str(img_id)+'.npy')[:,2:4]
-                    for i in range(num_point2d):
+                    for i in range(current_num_point2d):
                         if int(data[i*3+2])!= -1:
                             points_2d.append([int(float(data[i*3])-0.5),int(float(data[i*3+1])-0.5)])
                             ori_2d.append(ori2d_temp[i])
-                            camera_indices.append(img_id)
+                            camera_indices.append(camera_idx)
                             point3d_indices.append(np.where(points_3d[:,0]==int(data[i*3+2]))[0][0])
+                    camera_idx = camera_idx + 1
     
     points_3d = points_3d[:,1:4]
     camera_params = np.array(camera_params)
-   
+    
     points_2d = np.array(points_2d)
     ori_2d = np.array(ori_2d)
     ori_2d[:, [1, 0]] = ori_2d[:, [0, 1]] # swap the two columns since the $\theta_x$, $\theta_y$ stored in numpy is reversed
     ori_2d = np.arctan2(ori_2d[:,0],ori_2d[:,1])
     
     point3d_indices = np.array(point3d_indices)
-    camera_indices = np.array(camera_indices) - 1
+    camera_indices = np.array(camera_indices)
     ori_3d = estimate_ori3d(camera_params,camera_indices,point3d_indices,num_point3d,ori_2d)
 
-    ori_3d_azi_ele = convert_oxoyoz_to_azi_ele(ori_3d)
+    ori_3d_azi_ele = convert_oxoyoz_to_azi_ele(ori_3d) 
     points_3d = np.concatenate((points_3d,ori_3d_azi_ele),axis=1)
     x0 = np.hstack((camera_params.ravel(),points_3d.ravel()))
     points_2d = np.concatenate((points_2d,ori_2d[:,np.newaxis]),axis=1)
-    return x0, camera_params, camera_indices, points_3d, points_2d, camera_indices, point3d_indices, num_point3d, num_point2d, ori_2d
+    num_point2d = points_2d.shape[0]
+    return x0, camera_params, camera_indices, points_3d, points_2d, point3d_indices, num_point3d, num_point2d, ori_2d
 
 def project(points, cam_params_pointwise):
     assert points.shape[1] == 3
@@ -156,7 +193,7 @@ def project_ori(directions,cam_params_pointwise):
 
 
 def fun(params_obj, n_cameras, n_points, camera_indices, point3d_indices, points_2d):
-    lambda_ori = 10
+    lambda_ori = 100
     camera_params = params_obj[:n_cameras * 9].reshape((n_cameras, 9))
     points_3d = params_obj[n_cameras * 9:].reshape((n_points, 5))
     position_3d = points_3d[:,0:3]
@@ -204,7 +241,7 @@ def visualize(mat,normals):
 if __name__ == '__main__':
     minutiae_root_path = './minutiae_numpy/1_'
     camera_path,images_path,points3d_path = 'data_corr/cameras.txt','data_corr/images.txt','data_corr/points3D.txt'
-    x0, camera_params, camera_indices, points_3d, points_2d, camera_indices, point3d_indices, num_point3d, num_point2d, ori_2d = load_params(camera_path,images_path,points3d_path,minutiae_root_path)
+    x0, camera_params, camera_indices, points_3d, points_2d, point3d_indices, num_point3d, num_point2d, ori_2d = load_params(camera_path,images_path,points3d_path,minutiae_root_path)
     
     position_3d_initial = points_3d[:,0:3]
     orientation_3d_azi_ele_initial = points_3d[:,3:5]
@@ -217,7 +254,10 @@ if __name__ == '__main__':
     num_paramters = 9 * num_cameras + 5 * num_point3d
     num_residuals = 3 * num_point2d
     f0 = fun(x0, num_cameras, num_point3d, camera_indices, point3d_indices, points_2d)
-    plt.plot(f0)
+
+    residual_position = np.linalg.norm(f0.reshape(int(f0.shape[0]/3),3)[:,0:2],axis=1)
+    residual_ori = f0.reshape(int(f0.shape[0]/3),3)[:,2:3]
+
     A = bundle_adjustment_sparsity(num_cameras, num_point3d, camera_indices, point3d_indices)
 
     res = least_squares(fun, x0, jac_sparsity=A, verbose=2, x_scale='jac', ftol=1e-4, method='trf',
@@ -232,6 +272,17 @@ if __name__ == '__main__':
 
     visualize(position_3d_optimized,orientation_3d_optimized)
 
-    plt.plot(res.fun)
+    residual_position_opt = np.linalg.norm(res.fun.reshape(int(res.fun.shape[0]/3),3)[:,0:2],axis=1)
+    residual_ori_opt = res.fun.reshape(int(res.fun.shape[0]/3),3)[:,2:3]
+
+    plt.plot(residual_position,label='position difference')
+    plt.plot(residual_position_opt,label='optimized position difference')
+    plt.legend()
     plt.show()
+
+    plt.plot(residual_ori,label='orientational difference')
+    plt.plot(residual_ori_opt,label='optimized orientational difference')
+    plt.legend()
+    plt.show()
+
 
